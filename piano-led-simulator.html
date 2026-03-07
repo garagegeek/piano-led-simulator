@@ -116,6 +116,9 @@ input[type=file] { display:none; }
       <button class="file-btn" id="btn-midi" onclick="document.getElementById('inp-midi').click()">♩ Load MIDI</button>
       <input type="file" id="inp-mp3"  accept=".mp3,.wav,.ogg,.flac">
       <input type="file" id="inp-midi" accept=".mid,.midi">
+      <span style="font-size:8px;color:var(--dim);letter-spacing:1px;padding:0 2px">OR</span>
+      <button class="file-btn" id="btn-lmp" onclick="document.getElementById('inp-lmp').click()">⬡ Load LMP</button>
+      <input type="file" id="inp-lmp" accept=".lmp">
     </div>
     <div class="sep"></div>
     <div class="transport">
@@ -159,7 +162,7 @@ input[type=file] { display:none; }
 
   <div id="vis-area">
     <div id="note-strip">
-      <span class="istat" style="color:var(--dim)">Load MP3 + MIDI then press Play — or try DEMO mode</span>
+      <span class="istat" style="color:var(--dim)">Load MP3 + MIDI or an .lmp file then press Play — or try DEMO mode</span>
     </div>
     <div id="canvas-wrap"><canvas id="c"></canvas></div>
     <div id="info-bar">
@@ -192,6 +195,7 @@ const S = {
   evtIdx: 0,              // pointer into activeEvents — the next event yet to fire
   notesPlayed: 0,
   peakVel: 0,
+  lmpLoaded: false,       // true when audio+events came from a single .lmp file
 };
 
 // Per-LED state updated every frame
@@ -386,12 +390,100 @@ document.getElementById('inp-midi').addEventListener('change', async e => {
   const btn = document.getElementById('btn-midi');
   btn.textContent = '⟳ Parsing…'; btn.classList.remove('loaded');
   try {
-    S.parsedMidi = parseMidiFile(await f.arrayBuffer());
+    S.parsedMidi  = parseMidiFile(await f.arrayBuffer());
+    S.lmpLoaded   = false;
     btn.textContent = '✓ ' + clip(f.name);
     btn.classList.add('loaded');
     buildTrackSelector();
   } catch(err) {
     btn.textContent = '✗ ' + err.message.substring(0, 28);
+    console.error(err);
+  }
+  refreshStatus(); e.target.value = '';
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  LMP PARSER
+//
+//  Walks the .lmp binary stream sequentially. Note events carry no
+//  explicit timestamp — their time is inferred from the number of
+//  audio samples seen so far (currentSample / sampleRate).
+//  PCM bytes are batch-copied into a contiguous Uint8Array so we
+//  can create an Int16Array view without unaligned-access issues,
+//  then converted to Float32 for the Web Audio API in one tight loop.
+// ═══════════════════════════════════════════════════════════════
+function parseLmp(buf) {
+  const bytes = new Uint8Array(buf);
+  const dv    = new DataView(buf);
+
+  const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic !== 'LMP1') throw new Error('Not a valid .lmp file (bad magic)');
+
+  const sampleRate   = dv.getUint32(4,  false);
+  const totalSamples = dv.getUint32(8,  false);
+
+  // Batch-collect raw PCM bytes so we can create an aligned Int16Array view
+  const pcmBytes    = new Uint8Array(totalSamples * 4);  // 2 int16s per stereo pair
+  let   pcmWritePos = 0;
+  let   currentSample = 0;
+  const events = [];
+  let   pos = 12;
+
+  while (pos < bytes.length) {
+    const type = bytes[pos++];
+    if (type === 0x01) {                               // AUDIO chunk
+      const n       = (bytes[pos] << 8) | bytes[pos + 1]; pos += 2;
+      const byteLen = n * 4;
+      pcmBytes.set(bytes.subarray(pos, pos + byteLen), pcmWritePos);
+      pcmWritePos   += byteLen;
+      pos           += byteLen;
+      currentSample += n;
+    } else if (type === 0x02) {                        // NOTE ON
+      const noteIdx = bytes[pos++], vel = bytes[pos++];
+      events.push({ time: currentSample / sampleRate, type: 'on',
+                    note: noteIdx + 21, vel });
+    } else if (type === 0x03) {                        // NOTE OFF
+      const noteIdx = bytes[pos++];
+      events.push({ time: currentSample / sampleRate, type: 'off',
+                    note: noteIdx + 21, vel: 0 });
+    } else {
+      throw new Error(`Unknown chunk type 0x${type.toString(16)} at byte ${pos - 1}`);
+    }
+  }
+
+  // Convert little-endian int16 PCM → Float32 AudioBuffer
+  const pcmInt16    = new Int16Array(pcmBytes.buffer);
+  const audioBuffer = S.audioCtx.createBuffer(2, totalSamples, sampleRate);
+  const L = audioBuffer.getChannelData(0);
+  const R = audioBuffer.getChannelData(1);
+  for (let i = 0; i < totalSamples; i++) {
+    L[i] = pcmInt16[i * 2]     / 32768.0;
+    R[i] = pcmInt16[i * 2 + 1] / 32768.0;
+  }
+
+  return { audioBuffer, events, duration: totalSamples / sampleRate };
+}
+
+document.getElementById('inp-lmp').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const btn = document.getElementById('btn-lmp');
+  btn.textContent = '⟳ Loading…'; btn.classList.remove('loaded');
+  ensureCtx();
+  try {
+    const { audioBuffer, events, duration } = parseLmp(await f.arrayBuffer());
+    S.audioBuffer    = audioBuffer;
+    S.activeEvents   = events;
+    S.activeTrackIdx = -1;
+    S.duration       = duration;
+    S.lmpLoaded      = true;
+    S.parsedMidi     = null;
+    document.getElementById('track-row').classList.remove('visible');
+    document.getElementById('s-evts').textContent =
+      events.filter(ev => ev.type === 'on').length + ' events';
+    btn.textContent = '✓ ' + clip(f.name);
+    btn.classList.add('loaded');
+  } catch(err) {
+    btn.textContent = '✗ ' + err.message.substring(0, 24);
     console.error(err);
   }
   refreshStatus(); e.target.value = '';
@@ -405,7 +497,7 @@ function ensureCtx() {
 }
 
 function refreshStatus() {
-  const ha = !!S.audioBuffer, hm = !!S.parsedMidi;
+  const ha = !!S.audioBuffer, hm = !!S.parsedMidi || S.lmpLoaded;
   const el = document.getElementById('status-badge');
   if (ha && hm) {
     el.textContent = 'READY'; el.className = 'ready';
@@ -465,7 +557,7 @@ function selectTrack(idx) {
 function doTogglePlay() {
   if (demoActive) { toggleDemo(); return; }
   if (!S.audioBuffer || !S.activeEvents.length) {
-    flashWarn('Load MP3 + MIDI first'); return;
+    flashWarn('Load MP3 + MIDI or .lmp first'); return;
   }
   S.isPlaying ? doPause() : doPlay();
 }

@@ -32,10 +32,7 @@ try:
 except ImportError:
     sys.exit("Missing dependency: pip install mido")
 
-try:
-    from pydub import AudioSegment
-except ImportError:
-    sys.exit("Missing dependency: pip install pydub  (also needs ffmpeg)")
+import subprocess
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -195,27 +192,22 @@ def load_audio(path, target_sample_rate):
     """
     Load an audio file and return a numpy array of shape (2, N) containing
     stereo int16 samples, along with the actual sample rate used.
+    Uses ffmpeg directly to decode any audio format to raw PCM.
     """
     print(f"  Loading audio: {path}")
-    audio = AudioSegment.from_file(path)
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error',
+        '-i', path,
+        '-ar', str(target_sample_rate),
+        '-ac', '2',
+        '-f', 's16le',
+        'pipe:1'
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        sys.exit(f"ffmpeg error: {result.stderr.decode()}")
 
-    # Resample to the target rate if needed
-    if audio.frame_rate != target_sample_rate:
-        print(f"  Resampling {audio.frame_rate} Hz → {target_sample_rate} Hz")
-        audio = audio.set_frame_rate(target_sample_rate)
-
-    # Ensure stereo — duplicate mono to both channels
-    if audio.channels == 1:
-        print("  Converting mono → stereo")
-        audio = audio.set_channels(2)
-    elif audio.channels > 2:
-        print(f"  Mixing {audio.channels} channels → stereo")
-        audio = audio.set_channels(2)
-
-    # Extract as int16 numpy array — pydub gives us interleaved L R L R ...
-    samples = np.frombuffer(audio.raw_data, dtype=np.int16)
-
-    # Reshape to (N, 2) then transpose to (2, N) — shape (2, total_samples)
+    samples = np.frombuffer(result.stdout, dtype=np.int16)
     stereo = samples.reshape(-1, 2).T
 
     duration = stereo.shape[1] / target_sample_rate
