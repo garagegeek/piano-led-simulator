@@ -47,6 +47,9 @@ Open `piano-led-simulator.html` in any modern browser (Chrome, Firefox, Edge, Sa
 Keyboard shortcuts: `Space` to play/pause, `Esc` to stop.
 
 ---
+<img width="1535" height="1214" alt="image" src="https://github.com/user-attachments/assets/f7f9f36a-e032-44bf-83f9-296729cfd508" />
+
+---
 
 ## Project Architecture
 
