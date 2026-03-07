@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Piano LED Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #07070f; --surface: #0d0d1c; --surface2: #12122a;
+  --border: #1a1a38; --accent: #e88428; --accent-glow: rgba(232,132,40,0.35);
+  --green: #2ecc71; --text: #9090b8; --text-bright: #c8c8e8; --dim: #33335a;
+}
+html, body { width:100%; height:100%; background:var(--bg); color:var(--text);
+  font-family:'JetBrains Mono',monospace; overflow:hidden; user-select:none; }
+#app { display:flex; flex-direction:column; height:100vh; padding:10px 14px; gap:8px; }
+
+/* HEADER */
+#header { display:flex; align-items:center; justify-content:space-between; padding:0 2px; flex-shrink:0; }
+.logo { display:flex; flex-direction:column; gap:2px; }
+.title { font-family:'Orbitron',sans-serif; font-size:13px; font-weight:700;
+  letter-spacing:5px; color:var(--accent); text-shadow:0 0 20px var(--accent-glow); }
+.subtitle { font-size:9px; color:var(--dim); letter-spacing:3px; text-transform:uppercase; }
+#status-badge { font-size:10px; padding:3px 10px; border-radius:20px;
+  border:1px solid var(--border); color:var(--dim); background:var(--surface);
+  letter-spacing:1px; transition:all 0.3s; }
+#status-badge.ready { border-color:var(--green); color:var(--green); box-shadow:0 0 10px rgba(46,204,113,0.2); }
+#status-badge.warn  { border-color:#e84040; color:#e84040; }
+
+/* CONTROLS ROW */
+.ctrl-row { display:flex; align-items:center; gap:10px;
+  padding:8px 14px; background:var(--surface);
+  border:1px solid var(--border); border-radius:6px; flex-shrink:0; flex-wrap:wrap; }
+.file-btn { background:var(--surface2); border:1px solid var(--border);
+  color:var(--text); font-family:'JetBrains Mono',monospace; font-size:10px;
+  padding:5px 11px; cursor:pointer; border-radius:3px; letter-spacing:1px;
+  transition:all 0.15s; white-space:nowrap; max-width:170px;
+  overflow:hidden; text-overflow:ellipsis; }
+.file-btn:hover { border-color:var(--accent); color:var(--accent); }
+.file-btn.loaded { border-color:var(--green); color:var(--green); }
+.sep { width:1px; height:26px; background:var(--border); flex-shrink:0; }
+.transport { display:flex; gap:5px; align-items:center; }
+.tbtn { width:30px; height:30px; background:var(--surface2); border:1px solid var(--border);
+  color:var(--text); cursor:pointer; border-radius:3px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; transition:all 0.15s; }
+.tbtn:hover  { border-color:var(--accent); color:var(--accent); }
+.tbtn.active { background:var(--accent); border-color:var(--accent); color:#000;
+  box-shadow:0 0 14px var(--accent-glow); }
+.prog-group { flex:1; min-width:180px; display:flex; align-items:center; gap:8px; }
+#prog-bar { flex:1; height:4px; background:var(--border); border-radius:2px;
+  cursor:pointer; position:relative; }
+#prog-fill { height:100%; background:var(--accent); border-radius:2px; width:0%;
+  box-shadow:0 0 8px var(--accent-glow); pointer-events:none; }
+#time-disp { font-size:10px; color:var(--text-bright); min-width:88px; text-align:right; letter-spacing:1px; }
+.fx-group { display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; }
+.fx-ctrl { display:flex; flex-direction:column; gap:4px; }
+.fx-label { font-size:8px; letter-spacing:1px; color:var(--dim); text-transform:uppercase; }
+input[type=range] { width:78px; height:3px; accent-color:var(--accent); cursor:pointer; }
+select.fx-sel { background:var(--surface2); border:1px solid var(--border);
+  color:var(--text); font-family:'JetBrains Mono',monospace; font-size:9px;
+  padding:4px 8px; border-radius:3px; cursor:pointer; outline:none; }
+#demo-btn { background:transparent; border:1px solid var(--dim); color:var(--dim);
+  font-family:'JetBrains Mono',monospace; font-size:9px; padding:4px 10px;
+  border-radius:3px; cursor:pointer; letter-spacing:1px; transition:all 0.15s; }
+#demo-btn:hover { border-color:var(--accent); color:var(--accent); }
+#demo-btn.on { border-color:var(--accent); color:var(--accent); box-shadow:0 0 8px var(--accent-glow); }
+
+/* TRACK SELECTOR ROW */
+#track-row { display:none; align-items:center; gap:10px;
+  padding:7px 14px; background:var(--surface);
+  border:1px solid var(--border); border-radius:6px; flex-shrink:0; flex-wrap:wrap; }
+#track-row.visible { display:flex; }
+.track-lbl { font-size:9px; color:var(--dim); letter-spacing:2px; text-transform:uppercase; white-space:nowrap; }
+#track-list { display:flex; gap:6px; flex-wrap:wrap; }
+.track-btn { background:var(--surface2); border:1px solid var(--border);
+  color:var(--text); font-family:'JetBrains Mono',monospace; font-size:9px;
+  padding:4px 10px; cursor:pointer; border-radius:3px; letter-spacing:1px; transition:all 0.15s; }
+.track-btn:hover  { border-color:var(--accent); color:var(--accent); }
+.track-btn.sel    { border-color:var(--accent); color:var(--accent); background:rgba(232,132,40,0.1); }
+.track-btn.empty  { opacity:0.4; cursor:default; }
+
+/* VIS AREA */
+#vis-area { flex:1; display:flex; flex-direction:column; background:var(--surface);
+  border:1px solid var(--border); border-radius:6px; overflow:hidden; min-height:0; }
+#note-strip { padding:5px 12px; border-bottom:1px solid var(--border);
+  min-height:28px; display:flex; align-items:center; gap:5px; flex-wrap:wrap; flex-shrink:0; }
+.note-pill { font-size:9px; padding:2px 7px; border-radius:2px;
+  background:rgba(232,132,40,0.12); border:1px solid rgba(232,132,40,0.35);
+  color:var(--accent); letter-spacing:1px; animation:pillIn 0.1s ease; }
+@keyframes pillIn { from{opacity:0;transform:translateY(-2px)} to{opacity:1;transform:translateY(0)} }
+#canvas-wrap { flex:1; position:relative; min-height:0; }
+canvas { position:absolute; top:0; left:0; width:100%; height:100%; display:block; }
+#info-bar { display:flex; gap:24px; padding:4px 14px; border-top:1px solid var(--border); flex-shrink:0; }
+.istat { font-size:9px; letter-spacing:1px; color:var(--dim); }
+.istat span { color:var(--text-bright); }
+input[type=file] { display:none; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="header">
+    <div class="logo">
+      <div class="title">Piano LED Simulator</div>
+      <div class="subtitle">ESP32 WS2812B Strip Preview — 88 Keys</div>
+    </div>
+    <div id="status-badge">No files loaded</div>
+  </div>
+
+  <div class="ctrl-row">
+    <div style="display:flex;gap:6px;align-items:center;">
+      <button class="file-btn" id="btn-mp3"  onclick="document.getElementById('inp-mp3').click()">▶ Load MP3</button>
+      <button class="file-btn" id="btn-midi" onclick="document.getElementById('inp-midi').click()">♩ Load MIDI</button>
+      <input type="file" id="inp-mp3"  accept=".mp3,.wav,.ogg,.flac">
+      <input type="file" id="inp-midi" accept=".mid,.midi">
+    </div>
+    <div class="sep"></div>
+    <div class="transport">
+      <button class="tbtn" id="btn-stop" onclick="doStop()" title="Stop [Esc]">■</button>
+      <button class="tbtn" id="btn-play" onclick="doTogglePlay()" title="Play/Pause [Space]">▶</button>
+    </div>
+    <div class="prog-group">
+      <div id="prog-bar" onclick="doSeek(event)"><div id="prog-fill"></div></div>
+      <div id="time-disp">0:00 / 0:00</div>
+    </div>
+    <div class="sep"></div>
+    <div class="fx-group">
+      <div class="fx-ctrl">
+        <span class="fx-label">Glow Sigma</span>
+        <input type="range" id="fx-sigma" min="0.3" max="4.0" step="0.1" value="1.6">
+      </div>
+      <div class="fx-ctrl">
+        <span class="fx-label">Decay</span>
+        <input type="range" id="fx-decay" min="0.70" max="0.99" step="0.01" value="0.87">
+      </div>
+      <div class="fx-ctrl">
+        <span class="fx-label">Color</span>
+        <select class="fx-sel" id="fx-color">
+          <option value="amber">Warm Amber</option>
+          <option value="octave">Octave Rainbow</option>
+          <option value="velocity">Velocity Heat</option>
+          <option value="white">Pure White</option>
+          <option value="ice">Ice Blue</option>
+        </select>
+      </div>
+    </div>
+    <div class="sep"></div>
+    <button id="demo-btn" onclick="toggleDemo()">DEMO</button>
+  </div>
+
+  <!-- Track selector — revealed once MIDI is loaded -->
+  <div id="track-row">
+    <span class="track-lbl">MIDI Tracks</span>
+    <div id="track-list"></div>
+  </div>
+
+  <div id="vis-area">
+    <div id="note-strip">
+      <span class="istat" style="color:var(--dim)">Load MP3 + MIDI then press Play — or try DEMO mode</span>
+    </div>
+    <div id="canvas-wrap"><canvas id="c"></canvas></div>
+    <div id="info-bar">
+      <span class="istat">Notes played: <span id="s-played">0</span></span>
+      <span class="istat">Active LEDs: <span id="s-leds">0</span></span>
+      <span class="istat">Peak vel: <span id="s-vel">—</span></span>
+      <span class="istat">FPS: <span id="s-fps">—</span></span>
+      <span class="istat">Events: <span id="s-evts">—</span></span>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
+const S = {
+  audioCtx: null,
+  audioBuffer: null,
+  audioSrc: null,
+  parsedMidi: null,       // result from parseMidiFile()
+  activeTrackIdx: -1,
+  activeEvents: [],       // [{time (seconds), type:'on'|'off', note, vel}]
+  isPlaying: false,
+  startAt: 0,             // audioCtx.currentTime at the moment play() was called, minus the offset
+  pauseOffset: 0,         // seconds into the song when we paused
+  duration: 0,
+  evtIdx: 0,              // pointer into activeEvents — the next event yet to fire
+  notesPlayed: 0,
+  peakVel: 0,
+};
+
+// Per-LED state updated every frame
+const led_b = new Float32Array(88);  // current brightness 0..1
+const led_v = new Uint8Array(88);    // last velocity (for color mapping)
+const activeNotes = new Set();       // which MIDI note numbers are currently "on"
+
+// ═══════════════════════════════════════════════════════════════
+//  MIDI PARSER
+//
+//  Key insight: MIDI stores time as "delta ticks" — each event
+//  says "fire N ticks after the previous event". We accumulate
+//  these into absolute ticks, then convert to real seconds using
+//  the tempo map. The tempo map itself can change mid-song, so
+//  we have to treat each tempo segment separately.
+//
+//  For Format 1 files (most common), all tracks share the same
+//  timeline and the same tempo map. Tempo events often live
+//  exclusively in track 0 (the "conductor" track).
+// ═══════════════════════════════════════════════════════════════
+function parseMidiFile(buf) {
+  const data = new Uint8Array(buf);
+  let pos = 0;
+
+  const u8  = () => data[pos++];
+  const u16 = () => (data[pos++] << 8) | data[pos++];
+  const u32 = () => (((data[pos++]<<24)|(data[pos++]<<16)|(data[pos++]<<8)|data[pos++]) >>> 0);
+
+  // Variable-length quantity: MIDI's compact integer encoding.
+  // The high bit of each byte is a "continue" flag; the lower 7 bits are data.
+  // Example: the value 200 = 0b11001000 is stored as two bytes: 0x81 0x48.
+  const vlq = () => {
+    let v = 0, b;
+    do { b = u8(); v = (v << 7) | (b & 0x7F); } while (b & 0x80);
+    return v;
+  };
+
+  // --- File header ---
+  pos += 4;                   // "MThd" magic
+  pos += 4;                   // header length (always 6, we skip it)
+  const format    = u16();
+  const numTracks = u16();
+  const tpb       = u16();    // ticks per beat (quarter note)
+
+  if (tpb & 0x8000) throw new Error('SMPTE timecode MIDI not supported');
+
+  // We'll collect tempo changes and note events in raw tick form from all tracks.
+  const rawTempoMap = [];   // [{tick, tempo}]  tempo in µs per beat
+  const tracks      = [];
+
+  for (let t = 0; t < numTracks; t++) {
+    pos += 4;                        // "MTrk"
+    const chunkLen = u32();
+    const chunkEnd = pos + chunkLen; // we ALWAYS jump here at end of loop
+
+    let absTick       = 0;  // absolute tick counter for this track
+    let runningStatus = 0;  // MIDI running status: reuse last status byte
+    const rawNotes    = []; // raw note events with absolute ticks
+    let trackName     = `Track ${t}`;
+
+    while (pos < chunkEnd) {
+      // 1. Read the delta time for this event
+      absTick += vlq();
+
+      // 2. Determine the status byte (with running status support)
+      let status = data[pos];
+      if (status & 0x80) {
+        // It's a real status byte — consume it and update running status
+        runningStatus = status;
+        pos++;
+      } else {
+        // Data byte without a status — inherit the previous status.
+        // Running status does NOT apply to SysEx (0xF0) or Meta (0xFF).
+        status = runningStatus;
+        // Note: pos is NOT advanced here; the data byte stays for the handler below.
+      }
+
+      const eventType = (status >> 4) & 0xF;
+
+      // 3. Dispatch by event type
+      if (eventType === 0x9) {
+        // Note ON (or note OFF if vel=0)
+        const note = u8(), vel = u8();
+        rawNotes.push({ tick: absTick, type: vel > 0 ? 'on' : 'off', note, vel });
+
+      } else if (eventType === 0x8) {
+        // Note OFF
+        const note = u8(); u8(); // note, release velocity (we don't use it)
+        rawNotes.push({ tick: absTick, type: 'off', note, vel: 0 });
+
+      } else if (eventType === 0xA) { pos += 2; // Poly aftertouch: note + pressure
+      } else if (eventType === 0xB) { pos += 2; // Control change: controller + value
+      } else if (eventType === 0xC) { pos += 1; // Program change: program number
+      } else if (eventType === 0xD) { pos += 1; // Channel pressure: pressure
+      } else if (eventType === 0xE) { pos += 2; // Pitch bend: LSB + MSB
+
+      } else if (status === 0xFF) {
+        // Meta event — type byte + VLQ length + payload
+        const metaType = u8();
+        const metaLen  = vlq();
+        if (metaType === 0x51 && metaLen === 3) {
+          // Tempo change: 3 bytes = µs per beat (big-endian)
+          const us = (data[pos] << 16) | (data[pos+1] << 8) | data[pos+2];
+          rawTempoMap.push({ tick: absTick, tempo: us });
+        } else if (metaType === 0x03) {
+          // Track name meta event
+          trackName = String.fromCharCode(...data.slice(pos, pos + metaLen));
+        }
+        pos += metaLen;
+
+      } else if (status === 0xF0 || status === 0xF7) {
+        // SysEx — VLQ length then skip
+        pos += vlq();
+      } else {
+        pos++; // Unknown — advance one byte to avoid infinite loop
+      }
+    }
+
+    // Always land exactly at chunk boundary regardless of parse errors
+    pos = chunkEnd;
+    tracks.push({ name: trackName.trim() || `Track ${t}`, rawNotes });
+  }
+
+  // --- Build the global tempo map ---
+  // Sort by tick and ensure there's always a segment starting at tick 0.
+  rawTempoMap.sort((a, b) => a.tick - b.tick);
+  if (rawTempoMap.length === 0 || rawTempoMap[0].tick > 0) {
+    rawTempoMap.unshift({ tick: 0, tempo: 500000 }); // default: 120 BPM
+  }
+
+  // Pre-compute the start time in seconds for each segment.
+  // This is like computing prefix sums — each segment inherits
+  // where the previous one ended.
+  const tempoSegs = [];
+  for (let i = 0; i < rawTempoMap.length; i++) {
+    const prev = tempoSegs[i - 1] || null;
+    const startSec = prev
+      ? prev.startSec + ((rawTempoMap[i].tick - prev.tick) / tpb) * (prev.tempo / 1e6)
+      : 0;
+    tempoSegs.push({ tick: rawTempoMap[i].tick, tempo: rawTempoMap[i].tempo, startSec });
+  }
+
+  // Convert an absolute tick position → seconds, using the tempo map.
+  function ticksToSecs(tick) {
+    // Walk backwards through segments to find the last one at or before this tick.
+    let seg = tempoSegs[0];
+    for (let i = 1; i < tempoSegs.length; i++) {
+      if (tempoSegs[i].tick <= tick) seg = tempoSegs[i];
+      else break;
+    }
+    // Time = segment start time + elapsed ticks within segment converted to seconds
+    return seg.startSec + ((tick - seg.tick) / tpb) * (seg.tempo / 1e6);
+  }
+
+  // --- Build the final per-track event lists (now in real seconds) ---
+  const result = [];
+  for (const track of tracks) {
+    const events = track.rawNotes
+      .map(e => ({ time: ticksToSecs(e.tick), type: e.type, note: e.note, vel: e.vel }))
+      .sort((a, b) => a.time - b.time);
+    result.push({
+      name: track.name,
+      noteCount: events.filter(e => e.type === 'on').length,
+      events
+    });
+  }
+
+  return { tracks: result, format, tpb };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FILE LOADING
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('inp-mp3').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const btn = document.getElementById('btn-mp3');
+  btn.textContent = '⟳ Decoding…'; btn.classList.remove('loaded');
+  ensureCtx();
+  try {
+    S.audioBuffer = await S.audioCtx.decodeAudioData(await f.arrayBuffer());
+    S.duration    = S.audioBuffer.duration;
+    btn.textContent = '✓ ' + clip(f.name);
+    btn.classList.add('loaded');
+  } catch(err) {
+    btn.textContent = '✗ Decode error'; console.error(err);
+  }
+  refreshStatus(); e.target.value = '';
+});
+
+document.getElementById('inp-midi').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const btn = document.getElementById('btn-midi');
+  btn.textContent = '⟳ Parsing…'; btn.classList.remove('loaded');
+  try {
+    S.parsedMidi = parseMidiFile(await f.arrayBuffer());
+    btn.textContent = '✓ ' + clip(f.name);
+    btn.classList.add('loaded');
+    buildTrackSelector();
+  } catch(err) {
+    btn.textContent = '✗ ' + err.message.substring(0, 28);
+    console.error(err);
+  }
+  refreshStatus(); e.target.value = '';
+});
+
+function clip(n) { return n.length > 18 ? n.substring(0, 16) + '…' : n; }
+
+function ensureCtx() {
+  if (!S.audioCtx)
+    S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function refreshStatus() {
+  const ha = !!S.audioBuffer, hm = !!S.parsedMidi;
+  const el = document.getElementById('status-badge');
+  if (ha && hm) {
+    el.textContent = 'READY'; el.className = 'ready';
+  } else {
+    el.textContent = ha ? 'Waiting for MIDI…' : hm ? 'Waiting for MP3…' : 'No files loaded';
+    el.className = '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TRACK SELECTOR
+// ═══════════════════════════════════════════════════════════════
+function buildTrackSelector() {
+  const row  = document.getElementById('track-row');
+  const list = document.getElementById('track-list');
+  list.innerHTML = '';
+
+  S.parsedMidi.tracks.forEach((track, idx) => {
+    const btn  = document.createElement('button');
+    const empty = track.noteCount === 0;
+    btn.className   = 'track-btn' + (empty ? ' empty' : '');
+    btn.dataset.idx = idx;
+    btn.title       = empty ? 'No note events' : `${track.noteCount} note-on events`;
+    btn.textContent = `T${idx}: ${clip(track.name)} (${track.noteCount})`;
+    if (!empty) btn.onclick = () => selectTrack(idx);
+    list.appendChild(btn);
+  });
+
+  // Auto-select the first track that has notes
+  const first = S.parsedMidi.tracks.findIndex(t => t.noteCount > 0);
+  if (first !== -1) selectTrack(first);
+
+  row.classList.add('visible');
+}
+
+function selectTrack(idx) {
+  S.activeTrackIdx = idx;
+  S.activeEvents   = S.parsedMidi.tracks[idx].events;
+
+  // Reposition the event cursor so seeking/switching tracks mid-play works correctly
+  const elapsed = S.isPlaying
+    ? (S.audioCtx.currentTime - S.startAt)
+    : S.pauseOffset;
+  S.evtIdx = 0;
+  while (S.evtIdx < S.activeEvents.length && S.activeEvents[S.evtIdx].time < elapsed - 0.001)
+    S.evtIdx++;
+
+  document.querySelectorAll('.track-btn').forEach(b =>
+    b.classList.toggle('sel', parseInt(b.dataset.idx) === idx));
+  document.getElementById('s-evts').textContent =
+    S.parsedMidi.tracks[idx].noteCount + ' events';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TRANSPORT
+// ═══════════════════════════════════════════════════════════════
+function doTogglePlay() {
+  if (demoActive) { toggleDemo(); return; }
+  if (!S.audioBuffer || !S.activeEvents.length) {
+    flashWarn('Load MP3 + MIDI first'); return;
+  }
+  S.isPlaying ? doPause() : doPlay();
+}
+
+function doPlay() {
+  ensureCtx();
+  if (S.audioCtx.state === 'suspended') S.audioCtx.resume();
+
+  S.audioSrc        = S.audioCtx.createBufferSource();
+  S.audioSrc.buffer = S.audioBuffer;
+  S.audioSrc.connect(S.audioCtx.destination);
+
+  const off = S.pauseOffset;
+
+  // Schedule audio to begin immediately, offset seconds into the buffer.
+  // After this call, (audioCtx.currentTime - S.startAt) gives elapsed song time.
+  S.audioSrc.start(0, off);
+  S.startAt = S.audioCtx.currentTime - off;
+
+  S.isPlaying = true;
+
+  // Skip past MIDI events that already elapsed (e.g. after a seek)
+  S.evtIdx = 0;
+  while (S.evtIdx < S.activeEvents.length &&
+         S.activeEvents[S.evtIdx].time < off - 0.001)
+    S.evtIdx++;
+
+  document.getElementById('btn-play').textContent = '⏸';
+  document.getElementById('btn-play').classList.add('active');
+  S.audioSrc.onended = () => { if (S.isPlaying) doStop(); };
+}
+
+function doPause() {
+  S.pauseOffset = S.audioCtx.currentTime - S.startAt;
+  S.audioSrc.onended = null;
+  try { S.audioSrc.stop(); } catch(_){}
+  S.audioSrc    = null;
+  S.isPlaying   = false;
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('btn-play').classList.remove('active');
+}
+
+function doStop() {
+  if (S.audioSrc) {
+    S.audioSrc.onended = null;
+    try { S.audioSrc.stop(); } catch(_){}
+    S.audioSrc = null;
+  }
+  S.isPlaying = false; S.pauseOffset = 0; S.evtIdx = 0;
+  S.notesPlayed = 0; S.peakVel = 0;
+  led_b.fill(0); activeNotes.clear();
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('btn-play').classList.remove('active');
+  document.getElementById('prog-fill').style.width = '0%';
+  document.getElementById('time-disp').textContent = '0:00 / 0:00';
+}
+
+function doSeek(e) {
+  if (!S.audioBuffer) return;
+  const r   = e.currentTarget.getBoundingClientRect();
+  const t   = ((e.clientX - r.left) / r.width) * S.duration;
+  const was = S.isPlaying;
+  if (was) doPause();
+  S.pauseOffset = Math.max(0, Math.min(S.duration, t));
+  if (was) doPlay();
+}
+
+function flashWarn(msg) {
+  const el = document.getElementById('status-badge');
+  const prev = el.textContent, prevCls = el.className;
+  el.textContent = '⚠ ' + msg; el.className = 'warn';
+  setTimeout(() => { el.textContent = prev; el.className = prevCls; }, 2500);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LED EFFECTS ENGINE
+//
+//  The "energy splash" model:
+//    - note_on  → inject energy into the target LED and its neighbours,
+//                 using a Gaussian falloff curve. Additive: chords overlap.
+//    - note_off → just remove from activeNotes; the LED fades naturally.
+//    - every frame → multiply all brightnesses by decay factor (< 1).
+//  This means LEDs fade out on their own without any explicit off-handling,
+//  which is exactly how a real LED glow behaves.
+// ═══════════════════════════════════════════════════════════════
+function triggerNote(midiNote, vel) {
+  const idx = midiNote - 21;          // MIDI 21 = piano key 0 (A0)
+  if (idx < 0 || idx >= 88) return;
+
+  const sigma  = parseFloat(document.getElementById('fx-sigma').value);
+  const energy = vel / 127.0;
+  const radius = Math.ceil(sigma * 3.5);
+
+  for (let o = -radius; o <= radius; o++) {
+    const i = idx + o;
+    if (i >= 0 && i < 88) {
+      const falloff = Math.exp(-(o * o) / (2 * sigma * sigma));
+      led_b[i] = Math.min(1.0, led_b[i] + energy * falloff); // additive!
+      led_v[i] = vel;
+    }
+  }
+  activeNotes.add(midiNote);
+  S.notesPlayed++;
+  if (vel > S.peakVel) S.peakVel = vel;
+}
+
+function releaseNote(midiNote) { activeNotes.delete(midiNote); }
+
+// ═══════════════════════════════════════════════════════════════
+//  COLOR MAPPING
+// ═══════════════════════════════════════════════════════════════
+function hsl2rgb(h, s, l) {
+  h /= 360;
+  const q = l < 0.5 ? l*(1+s) : l+s-l*s, p = 2*l-q;
+  const c = t => {
+    if (t<0) t+=1; if (t>1) t-=1;
+    if (t<1/6) return p+(q-p)*6*t;
+    if (t<1/2) return q;
+    if (t<2/3) return p+(q-p)*(2/3-t)*6;
+    return p;
+  };
+  return [c(h+1/3)*255, c(h)*255, c(h-1/3)*255];
+}
+
+function ledColor(idx, b, vel) {
+  const mode = document.getElementById('fx-color').value;
+  let r, g, bb;
+  if (mode === 'amber') {
+    r=255*b; g=138*b; bb=18*b;
+  } else if (mode === 'octave') {
+    const oct = Math.floor((idx+9)/12) % 8;
+    const [cr,cg,cb] = hsl2rgb(oct * 45, 1, 0.5);
+    r=cr*b; g=cg*b; bb=cb*b;
+  } else if (mode === 'velocity') {
+    const t = vel/127;
+    r=(40+215*t)*b; g=(120-60*t)*b; bb=(255-220*t)*b;
+  } else if (mode === 'ice') {
+    r=40*b; g=160*b; bb=255*b;
+  } else {
+    r=g=bb=255*b;
+  }
+  return [r|0, g|0, bb|0];
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PIANO LAYOUT
+// ═══════════════════════════════════════════════════════════════
+// A standard 88-key piano has 52 white keys and 36 black keys.
+// White keys are in note classes: C D E F G A B → [1,0,1,0,1,1,0,1,0,1,0,1]
+const IS_WHITE = [1,0,1,0,1,1,0,1,0,1,0,1];
+
+function buildLayout(W, H) {
+  const LED_H  = Math.max(50, Math.floor(H * 0.24));
+  const PIAN_H = H - LED_H;
+  const BK_H   = Math.floor(PIAN_H * 0.60);
+
+  // Calculate white key width so they fill the full canvas width
+  let wCount = 0;
+  for (let n=21; n<=108; n++) if (IS_WHITE[n%12]) wCount++;
+  const WW = W / wCount;  // white key width
+  const BW = WW * 0.57;   // black key width
+
+  const keys = [];
+  let wi = 0;
+  for (let note=21; note<=108; note++) {
+    if (IS_WHITE[note%12]) {
+      keys.push({ note, white:true,
+        kx: wi*WW,              ky: LED_H, kw: WW,   kh: PIAN_H,
+        lx: wi*WW + WW*0.5,    ly: LED_H*0.46,
+        lr: Math.max(3, WW*0.33) });
+      wi++;
+    } else {
+      const bx = (wi-1)*WW + WW - BW*0.48;
+      keys.push({ note, white:false,
+        kx: bx,                 ky: LED_H, kw: BW,   kh: BK_H,
+        lx: bx + BW*0.5,        ly: LED_H*0.46,
+        lr: Math.max(2, BW*0.38) });
+    }
+  }
+  return { keys, LED_H };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ═══════════════════════════════════════════════════════════════
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let layout = null, cW = 0, cH = 0;
+let fpsCnt = 0, fpsLast = 0;
+let lastPillKey = '';
+
+function resize() {
+  const r = document.getElementById('canvas-wrap').getBoundingClientRect();
+  canvas.width = cW = r.width; canvas.height = cH = r.height;
+  layout = buildLayout(cW, cH);
+}
+
+function fmtT(s) {
+  const m=Math.floor(s/60), ss=Math.floor(s%60);
+  return `${m}:${ss.toString().padStart(2,'0')}`;
+}
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function noteName(n) { return NOTE_NAMES[n%12] + (Math.floor(n/12)-1); }
+
+function render(ts) {
+  requestAnimationFrame(render);
+  if (!layout) return;
+
+  // FPS
+  fpsCnt++;
+  if (ts - fpsLast >= 1000) {
+    document.getElementById('s-fps').textContent = fpsCnt;
+    fpsCnt = 0; fpsLast = ts;
+  }
+
+  // ── PROCESS MIDI EVENTS ──────────────────────────────────────────
+  // "elapsed" is how many seconds into the song we currently are.
+  // Because we computed S.startAt as (audioCtx.currentTime - offset)
+  // at the exact moment the audio started, this formula always gives
+  // the true playback position on the same clock as the audio.
+  if (S.isPlaying && S.audioCtx && S.activeEvents.length) {
+    const elapsed = S.audioCtx.currentTime - S.startAt;
+
+    // Fire all events whose timestamp has now passed
+    while (S.evtIdx < S.activeEvents.length &&
+           S.activeEvents[S.evtIdx].time <= elapsed) {
+      const ev = S.activeEvents[S.evtIdx++];
+      if (ev.type === 'on')  triggerNote(ev.note, ev.vel);
+      else                   releaseNote(ev.note);
+    }
+
+    const pct = Math.min(100, (elapsed / S.duration) * 100);
+    document.getElementById('prog-fill').style.width = pct + '%';
+    document.getElementById('time-disp').textContent = fmtT(elapsed) + ' / ' + fmtT(S.duration);
+  }
+
+  // Demo mode
+  if (demoActive && Math.random() < 0.06) demoFire();
+
+  // ── DECAY ─────────────────────────────────────────────────────────
+  const decay = parseFloat(document.getElementById('fx-decay').value);
+  let activeLEDs = 0;
+  for (let i=0; i<88; i++) {
+    led_b[i] *= decay;
+    if (led_b[i] < 0.004) led_b[i] = 0;
+    else activeLEDs++;
+  }
+
+  // ── DRAW ──────────────────────────────────────────────────────────
+  const { keys, LED_H } = layout;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, cW, LED_H);
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, LED_H, cW, cH - LED_H);
+
+  // White keys (drawn first so black keys paint over them)
+  for (const k of keys) {
+    if (!k.white) continue;
+    const b = led_b[k.note-21], g = b * 0.5;
+    ctx.fillStyle = `rgb(${(230+25*g)|0},${(230+8*g)|0},${(225-55*g)|0})`;
+    ctx.fillRect(k.kx+0.5, k.ky+0.5, k.kw-1, k.kh-2);
+    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 0.5;
+    ctx.strokeRect(k.kx+0.5, k.ky+0.5, k.kw-1, k.kh-2);
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(k.kx+1, k.ky+k.kh-8, k.kw-2, 7);
+  }
+
+  // Black keys
+  for (const k of keys) {
+    if (k.white) continue;
+    const b = led_b[k.note-21], gv = (20 + b*70)|0;
+    ctx.fillStyle = `rgb(${gv},${(gv*0.6)|0},${(gv*0.25)|0})`;
+    ctx.fillRect(k.kx, k.ky, k.kw, k.kh);
+    ctx.fillStyle = `rgba(255,220,100,${b*0.25})`;
+    ctx.fillRect(k.kx+2, k.ky+2, k.kw*0.35, k.kh*0.65);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(k.kx, k.ky+k.kh-4, k.kw, 4);
+  }
+
+  // LED halos — soft outer glow
+  for (const k of keys) {
+    const b = led_b[k.note-21]; if (b < 0.02) continue;
+    const [r,g,bb] = ledColor(k.note-21, b, led_v[k.note-21]);
+    const hr = k.lr * (2.5 + b*4);
+    const gr = ctx.createRadialGradient(k.lx, k.ly, 0, k.lx, k.ly, hr);
+    gr.addColorStop(0,    `rgba(${r},${g},${bb},${0.65*b})`);
+    gr.addColorStop(0.35, `rgba(${r},${g},${bb},${0.28*b})`);
+    gr.addColorStop(1,    'rgba(0,0,0,0)');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(k.lx, k.ly, hr, 0, Math.PI*2); ctx.fill();
+  }
+
+  // LED bright core dot
+  for (const k of keys) {
+    const b = led_b[k.note-21]; if (b < 0.02) continue;
+    const [r,g,bb] = ledColor(k.note-21, b, led_v[k.note-21]);
+    ctx.fillStyle = `rgb(${Math.min(255,r+90)},${Math.min(255,g+50)},${Math.min(255,bb+30)})`;
+    ctx.beginPath(); ctx.arc(k.lx, k.ly, k.lr * Math.min(1, b*2), 0, Math.PI*2); ctx.fill();
+  }
+
+  // Divider line between LED strip and piano
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, LED_H); ctx.lineTo(cW, LED_H); ctx.stroke();
+
+  // ── STATS & NOTE PILLS ────────────────────────────────────────────
+  document.getElementById('s-leds').textContent   = activeLEDs;
+  document.getElementById('s-played').textContent = S.notesPlayed;
+  document.getElementById('s-vel').textContent    = S.peakVel > 0 ? S.peakVel : '—';
+
+  const pillKey = [...activeNotes].sort((a,b)=>a-b).join(',');
+  if (pillKey !== lastPillKey) {
+    lastPillKey = pillKey;
+    const el = document.getElementById('note-strip');
+    el.innerHTML = pillKey
+      ? [...activeNotes].sort((a,b)=>a-b).map(n => `<span class="note-pill">${noteName(n)}</span>`).join('')
+      : '<span class="istat" style="color:var(--dim)">No active notes</span>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DEMO MODE
+// ═══════════════════════════════════════════════════════════════
+let demoActive = false, demoNotes = [], demoScaleIdx = 0;
+const DEMO_SCALES = [
+  [60,62,64,65,67,69,71,72],
+  [69,71,72,74,76,77,79,81],
+  [62,64,66,67,69,71,73,74],
+];
+function toggleDemo() {
+  demoActive = !demoActive;
+  document.getElementById('demo-btn').classList.toggle('on', demoActive);
+  if (!demoActive) { demoNotes.forEach(releaseNote); demoNotes = []; }
+}
+function demoFire() {
+  if (demoNotes.length > 0 && Math.random() < 0.4) {
+    const i = Math.floor(Math.random() * demoNotes.length);
+    releaseNote(demoNotes[i]); demoNotes.splice(i, 1);
+  }
+  const scale = DEMO_SCALES[demoScaleIdx % DEMO_SCALES.length];
+  const note  = scale[Math.floor(Math.random()*scale.length)] + (Math.floor(Math.random()*3)-1)*12;
+  if (note >= 21 && note <= 108) {
+    triggerNote(note, 60 + Math.floor(Math.random()*68));
+    demoNotes.push(note);
+    if (Math.random() < 0.02) demoScaleIdx++;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space')  { e.preventDefault(); doTogglePlay(); }
+  if (e.code === 'Escape') { doStop(); if (demoActive) toggleDemo(); }
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
