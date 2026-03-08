@@ -119,6 +119,8 @@ input[type=file] { display:none; }
       <span style="font-size:8px;color:var(--dim);letter-spacing:1px;padding:0 2px">OR</span>
       <button class="file-btn" id="btn-lmp" onclick="document.getElementById('inp-lmp').click()">⬡ Load LMP</button>
       <input type="file" id="inp-lmp" accept=".lmp">
+      <span style="width:1px;height:20px;background:var(--border);flex-shrink:0;margin:0 2px"></span>
+      <button class="file-btn" id="btn-export" onclick="exportLmp()" title="Export loaded MP3 + MIDI as .lmp">↓ Export LMP</button>
     </div>
     <div class="sep"></div>
     <div class="transport">
@@ -668,6 +670,108 @@ function flashWarn(msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  LMP EXPORTER
+//
+//  Encodes the currently loaded AudioBuffer + active MIDI track
+//  into an LMP1 binary file and triggers a Save dialog.
+//
+//  The audio is converted from Float32 → little-endian int16 in
+//  one bulk pass first (fast typed-array loop), then the bytes
+//  are batch-copied into the output buffer per chunk — avoiding
+//  slow per-sample DataView calls for the large PCM region.
+// ═══════════════════════════════════════════════════════════════
+async function exportLmp() {
+  if (!S.audioBuffer || !S.activeEvents.length) {
+    flashWarn('Load MP3 + MIDI first'); return;
+  }
+  const btn = document.getElementById('btn-export');
+  btn.textContent = '⟳ Encoding…'; btn.disabled = true;
+  await new Promise(r => setTimeout(r, 50)); // let UI repaint
+
+  try {
+    const sr           = S.audioBuffer.sampleRate;
+    const totalSamples = S.audioBuffer.length;
+    const L = S.audioBuffer.getChannelData(0);
+    const R = S.audioBuffer.getChannelData(1);
+    const CHUNK = 512;
+
+    // ── Pre-convert Float32 → little-endian int16 (bulk, fast) ──────
+    // Int16Array uses native (LE on x86) byte order, matching numpy's output.
+    const pcmI16  = new Int16Array(totalSamples * 2);
+    for (let i = 0; i < totalSamples; i++) {
+      pcmI16[i * 2]     = Math.max(-32768, Math.min(32767, L[i] * 32768 | 0));
+      pcmI16[i * 2 + 1] = Math.max(-32768, Math.min(32767, R[i] * 32768 | 0));
+    }
+    const pcmBytes = new Uint8Array(pcmI16.buffer); // zero-copy byte view
+
+    // ── Build event list sorted by sample position ────────────────────
+    const evts = S.activeEvents
+      .map(ev => ({ ...ev,
+        sp: Math.max(0, Math.min(totalSamples - 1, Math.round(ev.time * sr))) }))
+      .sort((a, b) => a.sp - b.sp || (a.type === 'off' ? -1 : 1));
+
+    const nOn  = evts.filter(e => e.type === 'on').length;
+    const nOff = evts.length - nOn;
+    const numChunks = Math.ceil(totalSamples / CHUNK);
+
+    const bufSize = 12 + numChunks * 3 + totalSamples * 4 + nOn * 3 + nOff * 2;
+    const ab  = new ArrayBuffer(bufSize);
+    const out = new Uint8Array(ab);
+    const dv  = new DataView(ab);
+    let pos = 0;
+
+    // Header: magic "LMP1" + sample_rate (BE u32) + total_samples (BE u32)
+    out[pos++]=0x4C; out[pos++]=0x4D; out[pos++]=0x50; out[pos++]=0x31;
+    dv.setUint32(pos, sr,           false); pos += 4;
+    dv.setUint32(pos, totalSamples, false); pos += 4;
+
+    let evtIdx = 0;
+    for (let sp = 0; sp < totalSamples; sp += CHUNK) {
+      const chunkEnd = Math.min(sp + CHUNK, totalSamples);
+      const numSamp  = chunkEnd - sp;
+
+      // Note events that fall before this chunk's end
+      while (evtIdx < evts.length && evts[evtIdx].sp < chunkEnd) {
+        const ev = evts[evtIdx++];
+        const n  = ev.note - 21;
+        if (n >= 0 && n <= 87) {
+          if (ev.type === 'on')  { out[pos++]=0x02; out[pos++]=n; out[pos++]=ev.vel; }
+          else                   { out[pos++]=0x03; out[pos++]=n; }
+        }
+      }
+
+      // Audio chunk header: type(1) + num_samples(2 BE)
+      out[pos++] = 0x01;
+      dv.setUint16(pos, numSamp, false); pos += 2;
+
+      // PCM: batch copy from pre-converted buffer (essentially a memcpy)
+      const byteStart = sp * 4;
+      out.set(pcmBytes.subarray(byteStart, byteStart + numSamp * 4), pos);
+      pos += numSamp * 4;
+    }
+
+    // Save — use File System Access API so user can pick the folder
+    const blob = new Blob([ab], { type: 'application/octet-stream' });
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: 'output.lmp',
+        types: [{ description: 'LMP File', accept: { 'application/octet-stream': ['.lmp'] } }]
+      });
+      const w = await handle.createWritable();
+      await w.write(blob); await w.close();
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'output.lmp'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+  } catch(err) {
+    if (err.name !== 'AbortError') { flashWarn('Export failed'); console.error(err); }
+  }
+
+  btn.textContent = '↓ Export LMP'; btn.disabled = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  LED EFFECTS ENGINE
 //
 //  The "energy splash" model:
@@ -852,20 +956,31 @@ function render(ts) {
   // White keys (drawn first so black keys paint over them)
   for (const k of keys) {
     if (!k.white) continue;
-    const b = led_b[k.note-21], g = b * 0.5;
-    ctx.fillStyle = `rgb(${(230+25*g)|0},${(230+8*g)|0},${(225-55*g)|0})`;
+    const b       = led_b[k.note-21], g = b * 0.5;
+    const pressed = activeNotes.has(k.note);
+    // Pressed: cool grey-blue tint to clearly show the depressed key
+    ctx.fillStyle = pressed
+      ? `rgb(${(175+25*g)|0},${(185+8*g)|0},${(210-30*g)|0})`
+      : `rgb(${(230+25*g)|0},${(230+8*g)|0},${(225-55*g)|0})`;
     ctx.fillRect(k.kx+0.5, k.ky+0.5, k.kw-1, k.kh-2);
-    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 0.5;
+    ctx.strokeStyle = pressed ? '#5566aa' : '#2a2a2a'; ctx.lineWidth = 0.5;
     ctx.strokeRect(k.kx+0.5, k.ky+0.5, k.kw-1, k.kh-2);
-    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    // Pressed keys get a top shadow to simulate physical depression
+    ctx.fillStyle = pressed ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.15)';
     ctx.fillRect(k.kx+1, k.ky+k.kh-8, k.kw-2, 7);
   }
 
   // Black keys
   for (const k of keys) {
     if (k.white) continue;
-    const b = led_b[k.note-21], gv = (20 + b*70)|0;
-    ctx.fillStyle = `rgb(${gv},${(gv*0.6)|0},${(gv*0.25)|0})`;
+    const b       = led_b[k.note-21];
+    const pressed = activeNotes.has(k.note);
+    // Pressed: lighter neutral grey instead of near-black
+    const base = pressed ? 50 : 20;
+    const gv   = (base + b*70)|0;
+    ctx.fillStyle = pressed
+      ? `rgb(${(gv*0.75)|0},${(gv*0.75)|0},${gv})`   // cool blue-grey when pressed
+      : `rgb(${gv},${(gv*0.6)|0},${(gv*0.25)|0})`;
     ctx.fillRect(k.kx, k.ky, k.kw, k.kh);
     ctx.fillStyle = `rgba(255,220,100,${b*0.25})`;
     ctx.fillRect(k.kx+2, k.ky+2, k.kw*0.35, k.kh*0.65);
