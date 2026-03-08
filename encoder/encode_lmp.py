@@ -69,6 +69,8 @@ CHUNK_TYPE_NOTE_OFF = 0x03
 
 AUDIO_CHUNK_SAMPLES = 512   # stereo sample pairs per audio chunk (~11.6ms at 44100Hz)
 MAGIC               = b'LMP1'
+MAGIC_V2            = b'LMP2'
+CHUNK_TYPE_TRACKS   = 0x00  # LMP2 only: track metadata header, written once before audio
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,43 +231,73 @@ def load_audio(path, target_sample_rate):
 #  refer to, so a front-to-back reader always hits the bookmark first.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def encode_lmp(stereo_audio, sample_rate, note_events, output_path):
+def encode_lmp(stereo_audio, sample_rate, output_path,
+               note_events=None, track_list=None):
     """
     Interleave stereo PCM audio chunks and note events into an .lmp file.
 
     stereo_audio: numpy array shape (2, N) of int16 samples
     sample_rate:  int, e.g. 44100
-    note_events:  list of {'time': float, 'type': 'on'|'off', 'note': int, 'vel': int}
     output_path:  str, path to write the .lmp file
+
+    LMP v1 (single track):
+        note_events: list of {'time', 'type', 'note', 'vel'}
+
+    LMP v2 (multi-track):
+        track_list: list of (track_id, name, events) — writes TRACKS_INFO header
+                    and appends track_id byte to every NOTE ON/OFF event
     """
+    assert (note_events is None) != (track_list is None), \
+        "Provide exactly one of note_events (LMP1) or track_list (LMP2)"
+
+    is_v2         = track_list is not None
     total_samples = stereo_audio.shape[1]
     duration      = total_samples / sample_rate
 
-    # Convert note event times (seconds) → sample positions.
-    # We clamp to [0, total_samples - 1] to handle any rounding at the very end.
-    events_by_sample = []
-    for ev in note_events:
-        sample_pos = int(ev['time'] * sample_rate)
-        sample_pos = max(0, min(total_samples - 1, sample_pos))
-        events_by_sample.append({**ev, 'sample_pos': sample_pos})
+    # Build flat event list tagged with sample positions (and track_id for LMP2)
+    raw_events = []
+    if is_v2:
+        for track_id, _name, events in track_list:
+            for ev in events:
+                raw_events.append({**ev, 'track_id': track_id})
+    else:
+        raw_events = list(note_events)
 
-    # Sort by sample position. For events at the same sample, note-offs come
-    # before note-ons so a key re-press registers cleanly.
+    events_by_sample = []
+    for ev in raw_events:
+        sp = int(ev['time'] * sample_rate)
+        sp = max(0, min(total_samples - 1, sp))
+        events_by_sample.append({**ev, 'sample_pos': sp})
+
+    # Note-offs before note-ons at the same sample so re-triggers are clean
     events_by_sample.sort(key=lambda e: (e['sample_pos'], 0 if e['type'] == 'off' else 1))
 
     notes_written = 0
     audio_chunks  = 0
-    evt_idx       = 0  # pointer into events_by_sample
+    evt_idx       = 0
     total_events  = len(events_by_sample)
 
     print(f"\n  Encoding {total_samples} samples ({duration:.2f}s) + {total_events} note events")
+    if is_v2:
+        print(f"  Format: LMP v2 ({len(track_list)} tracks)")
     print(f"  Output: {output_path}")
 
     with open(output_path, 'wb') as f:
 
         # ── FILE HEADER ─────────────────────────────────────────────────
-        f.write(MAGIC)
+        f.write(MAGIC_V2 if is_v2 else MAGIC)
         f.write(struct.pack('>II', sample_rate, total_samples))
+
+        # ── TRACKS_INFO chunk (LMP2 only) ────────────────────────────────
+        # Written once, immediately after the header, before any audio/note data.
+        # Layout per track: [track_id B][note_count H BE][name_len B][name bytes]
+        if is_v2:
+            f.write(struct.pack('BB', CHUNK_TYPE_TRACKS, len(track_list)))
+            for track_id, name, events in track_list:
+                note_count = sum(1 for e in events if e['type'] == 'on')
+                name_bytes = name.encode('utf-8')[:64]
+                f.write(struct.pack('>BHB', track_id, note_count, len(name_bytes)))
+                f.write(name_bytes)
 
         # ── INTERLEAVED CHUNKS ──────────────────────────────────────────
         sample_pos = 0
@@ -274,31 +306,27 @@ def encode_lmp(stereo_audio, sample_rate, note_events, output_path):
         while sample_pos < total_samples:
             chunk_end = min(sample_pos + AUDIO_CHUNK_SAMPLES, total_samples)
 
-            # Write all note events that occur before the end of this chunk.
-            # "Before the end" means: fire the LED at the same moment the
-            # corresponding audio samples start playing.
             while evt_idx < total_events and events_by_sample[evt_idx]['sample_pos'] < chunk_end:
                 ev   = events_by_sample[evt_idx]
-                note = ev['note'] - 21   # convert MIDI note to 0-87 index
+                note = ev['note'] - 21
 
-                # Silently skip notes outside the 88-key piano range
                 if 0 <= note <= 87:
                     if ev['type'] == 'on':
-                        f.write(struct.pack('BBB', CHUNK_TYPE_NOTE_ON, note, ev['vel']))
+                        if is_v2:
+                            f.write(struct.pack('BBBB', CHUNK_TYPE_NOTE_ON,  note, ev['vel'], ev['track_id']))
+                        else:
+                            f.write(struct.pack('BBB',  CHUNK_TYPE_NOTE_ON,  note, ev['vel']))
                     else:
-                        f.write(struct.pack('BB',  CHUNK_TYPE_NOTE_OFF, note))
+                        if is_v2:
+                            f.write(struct.pack('BBB',  CHUNK_TYPE_NOTE_OFF, note, ev['track_id']))
+                        else:
+                            f.write(struct.pack('BB',   CHUNK_TYPE_NOTE_OFF, note))
                     notes_written += 1
 
                 evt_idx += 1
 
-            # Write the audio chunk.
-            # We extract a slice of the stereo array, interleave L and R into
-            # a single flat array (L0 R0 L1 R1 ...), then write as raw bytes.
-            chunk    = stereo_audio[:, sample_pos:chunk_end]  # shape (2, chunk_size)
-            num_samp = chunk_end - sample_pos
-
-            # np.vstack gives us [[L0,L1,...],[R0,R1,...]], then .T gives
-            # [[L0,R0],[L1,R1],...], then flatten gives L0 R0 L1 R1 ...
+            chunk       = stereo_audio[:, sample_pos:chunk_end]
+            num_samp    = chunk_end - sample_pos
             interleaved = np.vstack(chunk).T.flatten().astype(np.int16)
 
             f.write(struct.pack('>BH', CHUNK_TYPE_AUDIO, num_samp))
@@ -307,7 +335,6 @@ def encode_lmp(stereo_audio, sample_rate, note_events, output_path):
             sample_pos   = chunk_end
             audio_chunks += 1
 
-            # Progress indicator
             pct = int(sample_pos / total_samples * 100)
             if pct != last_pct and pct % 10 == 0:
                 print(f"  {pct}%... ", end='', flush=True)
@@ -340,13 +367,26 @@ def verify_lmp(path):
 
     with open(path, 'rb') as f:
         magic = f.read(4)
-        if magic != MAGIC:
+        if magic not in (MAGIC, MAGIC_V2):
             print(f"  ✗ Bad magic bytes: {magic!r}")
             return
 
+        is_v2 = (magic == MAGIC_V2)
         sample_rate, total_samples = struct.unpack('>II', f.read(8))
-        print(f"  Header: {sample_rate} Hz, {total_samples} samples "
-              f"({total_samples/sample_rate:.2f}s)")
+        print(f"  Header: LMP v{'2' if is_v2 else '1'}, {sample_rate} Hz, "
+              f"{total_samples} samples ({total_samples/sample_rate:.2f}s)")
+
+        # LMP2: parse TRACKS_INFO
+        track_names = {}
+        if is_v2:
+            chunk_type = f.read(1)[0]
+            assert chunk_type == CHUNK_TYPE_TRACKS, f"Expected TRACKS_INFO, got 0x{chunk_type:02X}"
+            num_tracks = struct.unpack('B', f.read(1))[0]
+            for _ in range(num_tracks):
+                track_id, note_count, name_len = struct.unpack('>BHB', f.read(4))
+                name = f.read(name_len).decode('utf-8')
+                track_names[track_id] = name
+                print(f"    Track {track_id}: {name} ({note_count} note-on events)")
 
         current_sample = 0
         event_count    = 0
@@ -360,21 +400,26 @@ def verify_lmp(path):
 
             if t == CHUNK_TYPE_AUDIO:
                 num_samp, = struct.unpack('>H', f.read(2))
-                f.read(num_samp * 4)   # skip PCM data (int16 × 2 channels × num_samp)
+                f.read(num_samp * 4)
                 current_sample += num_samp
 
             elif t == CHUNK_TYPE_NOTE_ON:
-                note_idx, vel = struct.unpack('BB', f.read(2))
+                if is_v2:
+                    note_idx, vel, track_id = struct.unpack('BBB', f.read(3))
+                else:
+                    note_idx, vel = struct.unpack('BB', f.read(2))
+                    track_id = 0
                 midi_note = note_idx + 21
                 name = NOTE_NAMES[midi_note % 12] + str(midi_note // 12 - 1)
                 time_sec = current_sample / sample_rate
                 if shown < 20:
-                    print(f"    [{time_sec:7.3f}s]  NOTE ON   {name:4s}  vel={vel}")
+                    trk = f" [T{track_id}:{track_names.get(track_id,'')}]" if is_v2 else ""
+                    print(f"    [{time_sec:7.3f}s]  NOTE ON   {name:4s}  vel={vel}{trk}")
                     shown += 1
                 event_count += 1
 
             elif t == CHUNK_TYPE_NOTE_OFF:
-                note_idx, = struct.unpack('B', f.read(1))
+                f.read(2 if is_v2 else 1)  # note_idx [+ track_id for v2]
                 event_count += 1
 
             else:
@@ -404,6 +449,8 @@ def main():
                         help='List all MIDI tracks and exit (useful for finding the right track)')
     parser.add_argument('--sample-rate', type=int, default=44100,
                         help='Output sample rate in Hz (default: 44100; use 22050 to halve file size)')
+    parser.add_argument('--all-tracks',  action='store_true',
+                        help='Encode all non-empty MIDI tracks (outputs LMP v2 with per-track channel IDs)')
     parser.add_argument('--no-verify',   action='store_true',
                         help='Skip verification step after encoding')
     args = parser.parse_args()
@@ -443,7 +490,13 @@ def main():
 
     # ── ENCODE ──────────────────────────────────────────────────────────────
     print(f"\n[3/3] Encoding → {args.output}")
-    encode_lmp(stereo, sr, selected['events'], args.output)
+    if args.all_tracks:
+        nonempty   = [t for t in tracks if t['note_count'] > 0]
+        track_list = [(new_id, t['name'], t['events'])
+                      for new_id, t in enumerate(nonempty)]
+        encode_lmp(stereo, sr, args.output, track_list=track_list)
+    else:
+        encode_lmp(stereo, sr, args.output, note_events=selected['events'])
 
     if not args.no_verify:
         verify_lmp(args.output)
