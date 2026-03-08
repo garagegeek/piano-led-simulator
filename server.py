@@ -37,7 +37,7 @@ from basic_pitch.inference import predict, Model
 from basic_pitch import ICASSP_2022_MODEL_PATH
 
 MODEL = Model(ICASSP_2022_MODEL_PATH)
-print(f"✓ Model ready  (port {PORT})\n")
+print(f"OK - Model ready  (port {PORT})\n")
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
@@ -118,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
 
             events.sort(key=lambda e: (e['time'], 0 if e['type'] == 'off' else 1))
             note_count = sum(1 for e in events if e['type'] == 'on')
-            print(f"✓ {note_count} notes detected")
+            print(f"OK - {note_count} notes detected")
 
             body = json.dumps({'events': events, 'note_count': note_count}).encode()
             self.send_response(200)
