@@ -97,6 +97,9 @@ canvas { position:absolute; top:0; left:0; width:100%; height:100%; display:bloc
 .istat { font-size:9px; letter-spacing:1px; color:var(--dim); }
 .istat span { color:var(--text-bright); }
 input[type=file] { display:none; }
+.srv-dot { display:inline-block; width:6px; height:6px; border-radius:50%;
+  background:var(--dim); margin-right:3px; vertical-align:middle; transition:all 0.4s; flex-shrink:0; }
+.srv-dot.up { background:var(--green); box-shadow:0 0 7px rgba(46,204,113,0.5); }
 </style>
 </head>
 <body>
@@ -121,6 +124,9 @@ input[type=file] { display:none; }
       <input type="file" id="inp-lmp" accept=".lmp">
       <span style="width:1px;height:20px;background:var(--border);flex-shrink:0;margin:0 2px"></span>
       <button class="file-btn" id="btn-export" onclick="exportLmp()" title="Export loaded MP3 + MIDI as .lmp">↓ Export LMP</button>
+      <span style="width:1px;height:20px;background:var(--border);flex-shrink:0;margin:0 2px"></span>
+      <span class="srv-dot" id="srv-dot" title="Transcription server offline — run: py -3.11 server.py"></span>
+      <button class="file-btn" id="btn-transcribe" onclick="doTranscribe()" title="AI transcribe MP3 → note events (requires server.py)">🎵 Transcribe</button>
     </div>
     <div class="sep"></div>
     <div class="transport">
@@ -198,6 +204,8 @@ const S = {
   notesPlayed: 0,
   peakVel: 0,
   lmpLoaded: false,       // true when audio+events came from a single .lmp file
+  mp3Bytes:    null,      // original MP3 ArrayBuffer — sent to transcription server
+  mp3Filename: '',
 };
 
 // Per-LED state updated every frame
@@ -377,7 +385,10 @@ document.getElementById('inp-mp3').addEventListener('change', async e => {
   btn.textContent = '⟳ Decoding…'; btn.classList.remove('loaded');
   ensureCtx();
   try {
-    S.audioBuffer = await S.audioCtx.decodeAudioData(await f.arrayBuffer());
+    const ab = await f.arrayBuffer();
+    S.mp3Bytes    = ab.slice();   // keep original bytes for transcription
+    S.mp3Filename = f.name;
+    S.audioBuffer = await S.audioCtx.decodeAudioData(ab);
     S.duration    = S.audioBuffer.duration;
     btn.textContent = '✓ ' + clip(f.name);
     btn.classList.add('loaded');
@@ -1064,6 +1075,84 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space')  { e.preventDefault(); doTogglePlay(); }
   if (e.code === 'Escape') { doStop(); if (demoActive) toggleDemo(); }
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  TRANSCRIPTION SERVER
+//
+//  server.py runs locally at port 8765 (py -3.11 server.py).
+//  checkServer() pings it every 5 s and colours the status dot.
+//  doTranscribe() POSTs the raw MP3 bytes, receives note events
+//  as JSON, and loads them directly into the simulator — no MIDI
+//  file needed. The user can then hit Export LMP to save the result.
+// ═══════════════════════════════════════════════════════════════
+const SERVER = 'http://localhost:8765';
+let serverUp = false;
+
+async function checkServer() {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const r = await fetch(`${SERVER}/ping`, { signal: ctrl.signal });
+    serverUp = r.ok;
+  } catch { serverUp = false; }
+  finally  { clearTimeout(timer); }
+  const dot = document.getElementById('srv-dot');
+  dot.classList.toggle('up', serverUp);
+  dot.title = serverUp
+    ? 'Transcription server online'
+    : 'Transcription server offline — run:  py -3.11 server.py';
+}
+
+async function doTranscribe() {
+  if (!S.mp3Bytes) { flashWarn('Load an MP3 first'); return; }
+  if (!serverUp)   { flashWarn('Run: py -3.11 server.py'); return; }
+
+  const btn = document.getElementById('btn-transcribe');
+  btn.textContent = '⟳ Transcribing…'; btn.disabled = true;
+
+  const badge = document.getElementById('status-badge');
+  badge.textContent = '⟳ Transcribing…'; badge.className = '';
+
+  try {
+    const resp = await fetch(`${SERVER}/transcribe`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/octet-stream',
+                 'X-Filename': S.mp3Filename || 'audio.mp3' },
+      body:    S.mp3Bytes,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || `Server error ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    S.activeEvents   = data.events;
+    S.activeTrackIdx = -1;
+    S.lmpLoaded      = true;
+    S.parsedMidi     = null;
+    document.getElementById('track-row').classList.remove('visible');
+    document.getElementById('s-evts').textContent = data.note_count + ' events';
+
+    refreshStatus();  // → READY
+    badge.textContent = `✓ ${data.note_count} notes transcribed`;
+    badge.className   = 'ready';
+
+  } catch(err) {
+    if (err.name !== 'AbortError') {
+      flashWarn('Transcription failed — see console');
+      console.error(err);
+    }
+    badge.textContent = 'Transcription failed'; badge.className = 'warn';
+    setTimeout(() => refreshStatus(), 3000);
+  }
+
+  btn.textContent = '🎵 Transcribe'; btn.disabled = false;
+}
+
+// Poll server status every 5 s
+checkServer();
+setInterval(checkServer, 5000);
 
 // ═══════════════════════════════════════════════════════════════
 //  INIT
